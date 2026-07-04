@@ -16,6 +16,43 @@ fs.mkdirSync(videosDir, { recursive: true });
 
 app.use("/videos", express.static(videosDir));
 
+/*
+  Limpeza automática dos vídeos gerados
+  - Apaga vídeos com mais de 2 horas
+  - Roda a cada 30 minutos
+*/
+const MAX_VIDEO_AGE_MS = 2 * 60 * 60 * 1000; // 2 horas
+const CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function cleanupOldVideos() {
+  try {
+    const files = fs.readdirSync(videosDir);
+    const now = Date.now();
+
+    for (const file of files) {
+      if (!file.endsWith(".mp4")) {
+        continue;
+      }
+
+      const filePath = path.join(videosDir, file);
+
+      try {
+        const stats = fs.statSync(filePath);
+        const age = now - stats.mtimeMs;
+
+        if (age > MAX_VIDEO_AGE_MS) {
+          fs.unlinkSync(filePath);
+          console.log(`Vídeo antigo apagado: ${file}`);
+        }
+      } catch (err) {
+        console.error(`Erro ao verificar/apagar ${file}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error("Erro na limpeza de vídeos:", err.message);
+  }
+}
+
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -141,6 +178,13 @@ app.post("/render/image", async (req, res) => {
   }
 });
 
+// Faz uma limpeza quando a API inicia
+cleanupOldVideos();
+
+// Depois continua limpando automaticamente
+setInterval(cleanupOldVideos, CLEANUP_INTERVAL_MS);
+
 app.listen(PORT, () => {
   console.log(`API FFmpeg rodando na porta ${PORT}`);
+  console.log("Limpeza automática ativada: vídeos com mais de 2 horas serão apagados.");
 });
