@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg fontconfig ttf-dejavu
 
 WORKDIR /app
 
@@ -12,6 +12,6 @@ COPY . .
 
 RUN mkdir -p /app/public/videos
 
-EXPOSE 3000
+EXPOSE 80
 
 CMD ["node", "server.js"]
