@@ -1,5 +1,5 @@
 const express = require("express");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -7,10 +7,14 @@ const path = require("path");
 const app = express();
 
 app.use(express.json({ limit: "50mb" }));
-app.use("/videos", express.static(path.join(__dirname, "public/videos")));
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 80;
 const BASE_URL = process.env.BASE_URL || "";
+
+const videosDir = path.join(__dirname, "public/videos");
+fs.mkdirSync(videosDir, { recursive: true });
+
+app.use("/videos", express.static(videosDir));
 
 app.get("/", (req, res) => {
   res.json({
@@ -20,50 +24,92 @@ app.get("/", (req, res) => {
 });
 
 app.post("/render/image", async (req, res) => {
-  const id = crypto.randomBytes(8).toString("hex");
+  try {
+    const id = crypto.randomBytes(8).toString("hex");
 
-  const imageUrl = req.body.image_url;
-  const duration = Number(req.body.duration || 6);
+    const imageUrl = req.body.image_url;
+    const duration = Number(req.body.duration || 6);
 
-  if (!imageUrl) {
-    return res.status(400).json({
-      ok: false,
-      error: "Envie image_url"
-    });
-  }
-
-  const outputPath = path.join(__dirname, "public/videos", `${id}.mp4`);
-
-  const command = [
-    "ffmpeg",
-    "-y",
-    "-loop 1",
-    `-i "${imageUrl}"`,
-    `-t ${duration}`,
-    `-vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.15)':d=${duration * 30}:s=1080x1920:fps=30"`,
-    "-c:v libx264",
-    "-pix_fmt yuv420p",
-    `"${outputPath}"`
-  ].join(" ");
-
-  exec(command, { timeout: 120000 }, (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({
+    if (!imageUrl) {
+      return res.status(400).json({
         ok: false,
-        error: "Erro ao gerar vídeo",
-        details: stderr || error.message
+        error: "Envie image_url"
       });
     }
 
-    const videoUrl = BASE_URL
-      ? `${BASE_URL}/videos/${id}.mp4`
-      : `/videos/${id}.mp4`;
+    const inputPath = path.join("/tmp", `${id}.jpg`);
+    const outputPath = path.join(videosDir, `${id}.mp4`);
 
-    return res.json({
-      ok: true,
-      video_url: videoUrl
+    // Baixa a imagem primeiro
+    const response = await fetch(imageUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
     });
-  });
+
+    if (!response.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: "Não consegui baixar a imagem",
+        status: response.status
+      });
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    fs.writeFileSync(inputPath, Buffer.from(arrayBuffer));
+
+    const frames = Math.round(duration * 30);
+
+    const vf = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1080x1920:fps=30`;
+
+    const args = [
+      "-y",
+      "-loop", "1",
+      "-i", inputPath,
+      "-t", String(duration),
+      "-vf", vf,
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart",
+      outputPath
+    ];
+
+    execFile("ffmpeg", args, { timeout: 120000 }, (error, stdout, stderr) => {
+      try {
+        if (fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+        }
+      } catch (e) {}
+
+      if (error) {
+        console.error("Erro FFmpeg:", stderr || error.message);
+
+        return res.status(500).json({
+          ok: false,
+          error: "Erro ao gerar vídeo",
+          details: stderr || error.message
+        });
+      }
+
+      const videoUrl = BASE_URL
+        ? `${BASE_URL}/videos/${id}.mp4`
+        : `/videos/${id}.mp4`;
+
+      return res.json({
+        ok: true,
+        video_url: videoUrl
+      });
+    });
+  } catch (err) {
+    console.error("Erro geral:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Erro interno",
+      details: err.message
+    });
+  }
 });
 
 app.listen(PORT, () => {
