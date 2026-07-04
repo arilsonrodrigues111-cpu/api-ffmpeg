@@ -29,11 +29,26 @@ app.post("/render/image", async (req, res) => {
 
     const imageUrl = req.body.image_url;
     const duration = Number(req.body.duration || 6);
+    const zoomEnd = Number(req.body.zoom_end || 1.15);
 
     if (!imageUrl) {
       return res.status(400).json({
         ok: false,
         error: "Envie image_url"
+      });
+    }
+
+    if (duration <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "duration precisa ser maior que 0"
+      });
+    }
+
+    if (zoomEnd < 1) {
+      return res.status(400).json({
+        ok: false,
+        error: "zoom_end precisa ser maior ou igual a 1"
       });
     }
 
@@ -58,9 +73,17 @@ app.post("/render/image", async (req, res) => {
     const arrayBuffer = await response.arrayBuffer();
     fs.writeFileSync(inputPath, Buffer.from(arrayBuffer));
 
-    const frames = Math.round(duration * 30);
+    const fps = 30;
+    const frames = Math.round(duration * fps);
 
-    const vf = `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1080x1920:fps=30`;
+    // Faz o zoom durar a cena inteira
+    const zoomStep = (zoomEnd - 1) / frames;
+
+    const vf = [
+      "scale=1080:1920:force_original_aspect_ratio=increase",
+      "crop=1080:1920",
+      `zoompan=z='min(zoom+${zoomStep},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1080x1920:fps=${fps}`
+    ].join(",");
 
     const args = [
       "-y",
