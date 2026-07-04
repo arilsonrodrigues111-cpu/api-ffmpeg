@@ -29,7 +29,7 @@ app.post("/render/image", async (req, res) => {
 
     const imageUrl = req.body.image_url;
     const duration = Number(req.body.duration || 6);
-    const zoomEnd = Number(req.body.zoom_end || 1.15);
+    const zoomEnd = Number(req.body.zoom_end || 1.08);
 
     if (!imageUrl) {
       return res.status(400).json({
@@ -55,7 +55,6 @@ app.post("/render/image", async (req, res) => {
     const inputPath = path.join("/tmp", `${id}.jpg`);
     const outputPath = path.join(videosDir, `${id}.mp4`);
 
-    // Baixa a imagem primeiro
     const response = await fetch(imageUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0"
@@ -75,14 +74,21 @@ app.post("/render/image", async (req, res) => {
 
     const fps = 30;
     const frames = Math.round(duration * fps);
+    const framesMinusOne = Math.max(frames - 1, 1);
+    const zoomDelta = zoomEnd - 1;
 
-    // Faz o zoom durar a cena inteira
-    const zoomStep = (zoomEnd - 1) / frames;
-
+    /*
+      Versão anti-tremida:
+      - A imagem é aumentada para 2160x3840 antes do zoom.
+      - O zoom é calculado pelo número do frame, não somando zoom+passo.
+      - O centro fica mais estável.
+    */
     const vf = [
-      "scale=1080:1920:force_original_aspect_ratio=increase",
-      "crop=1080:1920",
-      `zoompan=z='min(zoom+${zoomStep},${zoomEnd})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1080x1920:fps=${fps}`
+      "scale=2160:3840:force_original_aspect_ratio=increase",
+      "crop=2160:3840",
+      "setsar=1",
+      `zoompan=z='1+${zoomDelta}*on/${framesMinusOne}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1080x1920:fps=${fps}`,
+      "format=yuv420p"
     ].join(",");
 
     const args = [
