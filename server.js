@@ -249,6 +249,104 @@ function escapeAssText(text) {
     .trim();
 }
 
+function assColorFromHex(value, fallback = "&H00FFFFFF") {
+  if (!value) return fallback;
+
+  const raw = String(value).trim();
+
+  if (/^&H[0-9A-Fa-f]{8}$/.test(raw)) {
+    return raw.toUpperCase();
+  }
+
+  const clean = raw.replace("#", "");
+
+  if (!/^[0-9A-Fa-f]{6}$/.test(clean)) {
+    return fallback;
+  }
+
+  const rr = clean.slice(0, 2);
+  const gg = clean.slice(2, 4);
+  const bb = clean.slice(4, 6);
+
+  return `&H00${bb}${gg}${rr}`.toUpperCase();
+}
+
+function assBackColorFromHex(value, fallback = "&H88000000", alpha = "88") {
+  if (!value) return fallback;
+
+  const raw = String(value).trim();
+
+  if (/^&H[0-9A-Fa-f]{8}$/.test(raw)) {
+    return raw.toUpperCase();
+  }
+
+  const rgbaMatch = raw.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([0-9.]+))?\)/i);
+
+  if (rgbaMatch) {
+    const r = Math.max(0, Math.min(255, Number(rgbaMatch[1]))).toString(16).padStart(2, "0");
+    const g = Math.max(0, Math.min(255, Number(rgbaMatch[2]))).toString(16).padStart(2, "0");
+    const b = Math.max(0, Math.min(255, Number(rgbaMatch[3]))).toString(16).padStart(2, "0");
+    const opacity = rgbaMatch[4] === undefined ? 0.45 : Math.max(0, Math.min(1, Number(rgbaMatch[4])));
+
+    // ASS alpha: 00 = opaco, FF = transparente
+    const assAlpha = Math.round((1 - opacity) * 255).toString(16).padStart(2, "0");
+
+    return `&H${assAlpha}${b}${g}${r}`.toUpperCase();
+  }
+
+  const clean = raw.replace("#", "");
+
+  if (!/^[0-9A-Fa-f]{6}$/.test(clean)) {
+    return fallback;
+  }
+
+  const rr = clean.slice(0, 2);
+  const gg = clean.slice(2, 4);
+  const bb = clean.slice(4, 6);
+
+  return `&H${alpha}${bb}${gg}${rr}`.toUpperCase();
+}
+
+function assInlineColorFromHex(value, fallback = "&HFFFFFF&") {
+  if (!value) return fallback;
+
+  const raw = String(value).trim();
+
+  if (/^&H[0-9A-Fa-f]{6}&$/.test(raw)) {
+    return raw.toUpperCase();
+  }
+
+  if (/^&H[0-9A-Fa-f]{8}$/.test(raw)) {
+    const withoutAlpha = raw.slice(4);
+    return `&H${withoutAlpha}&`.toUpperCase();
+  }
+
+  const clean = raw.replace("#", "");
+
+  if (!/^[0-9A-Fa-f]{6}$/.test(clean)) {
+    return fallback;
+  }
+
+  const rr = clean.slice(0, 2);
+  const gg = clean.slice(2, 4);
+  const bb = clean.slice(4, 6);
+
+  return `&H${bb}${gg}${rr}&`.toUpperCase();
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sanitizeFontName(fontName) {
+  const clean = String(fontName || "DejaVu Sans")
+    .replace(/[,\n\r]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return clean || "DejaVu Sans";
+}
+
 function wrapCaptionText(text, maxCharsPerLine = 26, maxLines = 2) {
   const words = escapeAssText(text).split(" ").filter(Boolean);
   const lines = [];
@@ -263,28 +361,74 @@ function wrapCaptionText(text, maxCharsPerLine = 26, maxLines = 2) {
       if (current) lines.push(current);
       current = word;
     }
-
-    if (lines.length >= maxLines - 1 && current.length > maxCharsPerLine) {
-      break;
-    }
   }
 
   if (current) lines.push(current);
 
-  if (lines.length > maxLines) {
-    const firstLines = lines.slice(0, maxLines - 1);
-    const lastLine = lines.slice(maxLines - 1).join(" ");
-    return [...firstLines, lastLine].join("\\N");
+  if (lines.length <= maxLines) {
+    return lines.join("\\N");
   }
 
-  return lines.join("\\N");
+  const limited = lines.slice(0, maxLines);
+  return limited.join("\\N");
+}
+
+function highlightImportantWord(text, highlightColor) {
+  const cleanText = String(text || "");
+
+  const stopWords = new Set([
+    "A", "O", "OS", "AS", "UM", "UMA", "UNS", "UMAS",
+    "DE", "DA", "DO", "DAS", "DOS", "EM", "NO", "NA", "NOS", "NAS",
+    "E", "OU", "QUE", "COM", "SEM", "PARA", "POR", "PRA",
+    "MAIS", "MAS", "FOI", "ERA", "SÃO", "SAO", "SER", "TER",
+    "ISSO", "ESSE", "ESSA", "ESTE", "ESTA", "ELE", "ELA",
+    "HOJE", "AGORA", "MUNDO", "BRASIL", "PESSOAS"
+  ]);
+
+  const plainWords = cleanText
+    .replace(/\\N/g, " ")
+    .split(/\s+/)
+    .map((word) => word.replace(/[^\p{L}\p{N}À-ÿ-]/gu, ""))
+    .filter(Boolean);
+
+  const chosen = plainWords.find((word) => {
+    const upper = word.toUpperCase();
+    return upper.length >= 5 && !stopWords.has(upper);
+  });
+
+  if (!chosen) return cleanText;
+
+  const colorTag = `{\\c${highlightColor}}`;
+  const whiteTag = "{\\c&HFFFFFF&}";
+
+  const regex = new RegExp(escapeRegex(chosen), "i");
+
+  return cleanText.replace(regex, `${colorTag}$&${whiteTag}`);
 }
 
 function createAssSubtitle(captions, outputPath, options = {}) {
-  const fontSize = Number(options.caption_font_size || 72);
-  const marginV = Number(options.caption_margin_v || 260);
+  const fontSize = Number(options.caption_font_size || 76);
+  const marginV = Number(options.caption_margin_v || 235);
   const uppercase = options.caption_uppercase !== false;
-  const maxCharsPerLine = Number(options.caption_max_chars_per_line || 24);
+  const maxCharsPerLine = Number(options.caption_max_chars_per_line || 22);
+  const maxLines = Number(options.caption_max_lines || 2);
+
+  const fontFamily = sanitizeFontName(options.caption_font_family || "DejaVu Sans");
+
+  const primaryColor = assColorFromHex(options.caption_font_color || "#FFFFFF", "&H00FFFFFF");
+  const outlineColor = assColorFromHex(options.caption_stroke_color || "#090909", "&H00090909");
+  const shadowColor = assBackColorFromHex(options.caption_shadow_color || "#000000", "&H70000000", "70");
+  const boxColor = assBackColorFromHex(options.caption_box_color || "rgba(0,0,0,0.42)", "&H93000000");
+  const highlightColor = assInlineColorFromHex(options.caption_highlight_color || "#FFD54A", "&H4AD5FF&");
+
+  const outline = Number(options.caption_stroke_width || 5);
+  const shadow = Number(options.caption_shadow_size || 3);
+  const spacing = Number(options.caption_letter_spacing || 0);
+  const fadeIn = Number(options.caption_fade_in_ms || 110);
+  const fadeOut = Number(options.caption_fade_out_ms || 120);
+
+  const boxEnabled = options.caption_box !== false;
+  const highlightEnabled = options.caption_highlight_keywords !== false;
 
   const header = `[Script Info]
 ScriptType: v4.00+
@@ -294,24 +438,39 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,70,70,${marginV},1
+Style: Text,${fontFamily},${fontSize},${primaryColor},&H000000FF,${outlineColor},${shadowColor},-1,0,0,0,100,100,${spacing},0,1,${outline},${shadow},2,78,78,${marginV},1
+Style: Box,${fontFamily},${fontSize},&HFF000000,&HFF000000,&HFF000000,${boxColor},-1,0,0,0,100,100,${spacing},0,3,18,0,2,78,78,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;
 
   const events = captions
     .filter((caption) => Number(caption.end) > Number(caption.start))
-    .map((caption) => {
+    .flatMap((caption) => {
       const start = formatAssTime(caption.start);
       const end = formatAssTime(caption.end);
 
       let text = String(caption.text || "");
       if (uppercase) text = text.toUpperCase();
 
-      text = wrapCaptionText(text, maxCharsPerLine, 2);
+      const wrapped = wrapCaptionText(text, maxCharsPerLine, maxLines);
+      const highlighted = highlightEnabled
+        ? highlightImportantWord(wrapped, highlightColor)
+        : wrapped;
 
-      // fad = entrada/saída suave
-      return `Dialogue: 0,${start},${end},Default,,0,0,0,,{\\fad(120,120)}${text}`;
+      const fadeTag = `{\\fad(${fadeIn},${fadeOut})}`;
+
+      const lines = [];
+
+      // Camada 0: fundo preto translúcido elegante
+      if (boxEnabled) {
+        lines.push(`Dialogue: 0,${start},${end},Box,,0,0,0,,${fadeTag}${wrapped}`);
+      }
+
+      // Camada 1: texto principal com contorno, sombra e destaque
+      lines.push(`Dialogue: 1,${start},${end},Text,,0,0,0,,${fadeTag}${highlighted}`);
+
+      return lines;
     })
     .join("\n");
 
@@ -338,12 +497,7 @@ function buildSubtitlePath(jobDir, body) {
     return null;
   }
 
-  createAssSubtitle(captions, assPath, {
-    caption_font_size: body.caption_font_size,
-    caption_margin_v: body.caption_margin_v,
-    caption_uppercase: body.caption_uppercase,
-    caption_max_chars_per_line: body.caption_max_chars_per_line
-  });
+  createAssSubtitle(captions, assPath, body);
 
   return assPath;
 }
