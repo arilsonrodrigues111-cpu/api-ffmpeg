@@ -1,6 +1,11 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache ffmpeg fontconfig ttf-dejavu
+RUN apk add --no-cache \
+    ffmpeg \
+    fontconfig \
+    ttf-dejavu \
+    font-montserrat \
+    && fc-cache -f -v
 
 WORKDIR /app
 
