@@ -124,6 +124,33 @@ async function renderImageScene(inputPath, outputPath, duration, zoomEnd) {
   await runFfmpeg(args);
 }
 
+async function renderImageAudioScene(imagePath, audioPath, outputPath, duration, zoomEnd) {
+  const safeDuration = Math.max(0.1, Number(duration || 6));
+  const vf = buildZoomFilter(safeDuration, zoomEnd);
+
+  const args = [
+    "-y",
+    "-loop", "1",
+    "-i", imagePath,
+    "-i", audioPath,
+    "-t", String(safeDuration),
+    "-vf", vf,
+    "-af", "apad",
+    "-map", "0:v:0",
+    "-map", "1:a:0",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "192k",
+    "-shortest",
+    "-movflags", "+faststart",
+    outputPath
+  ];
+
+  await runFfmpeg(args);
+}
+
 async function normalizeVideoScene(inputPath, outputPath) {
   const args = [
     "-y",
@@ -512,21 +539,24 @@ async function muxFinalVideo({
   audioPath,
   musicPath,
   subtitlePath,
-  musicVolume
+  musicVolume,
+  useVideoAudio = false
 }) {
-  const hasAudio = Boolean(audioPath);
+  const hasExternalAudio = Boolean(audioPath);
+  const hasVideoAudio = Boolean(useVideoAudio);
+  const hasBaseAudio = hasExternalAudio || hasVideoAudio;
   const hasMusic = Boolean(musicPath);
   const hasSubtitle = Boolean(subtitlePath);
 
   const args = ["-y", "-i", videoPath];
 
-  let audioIndex = null;
+  let externalAudioIndex = null;
   let musicIndex = null;
   let inputIndex = 1;
 
-  if (hasAudio) {
+  if (hasExternalAudio) {
     args.push("-i", audioPath);
-    audioIndex = inputIndex;
+    externalAudioIndex = inputIndex;
     inputIndex++;
   }
 
@@ -542,10 +572,11 @@ async function muxFinalVideo({
     filterParts.push(`[0:v]${buildSubtitleFilter(subtitlePath)}[vout]`);
   }
 
-  if (hasAudio && hasMusic) {
+  if (hasBaseAudio && hasMusic) {
+    const baseAudioLabel = hasExternalAudio ? `[${externalAudioIndex}:a]` : `[0:a]`;
     filterParts.push(`[${musicIndex}:a]volume=${musicVolume}[music]`);
-    filterParts.push(`[${audioIndex}:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]`);
-  } else if (!hasAudio && hasMusic) {
+    filterParts.push(`${baseAudioLabel}[music]amix=inputs=2:duration=first:dropout_transition=2[aout]`);
+  } else if (!hasBaseAudio && hasMusic) {
     filterParts.push(`[${musicIndex}:a]volume=${musicVolume}[aout]`);
   }
 
@@ -559,11 +590,13 @@ async function muxFinalVideo({
     args.push("-map", "0:v:0");
   }
 
-  if (hasAudio && hasMusic) {
+  if (hasBaseAudio && hasMusic) {
     args.push("-map", "[aout]");
-  } else if (hasAudio && !hasMusic) {
-    args.push("-map", `${audioIndex}:a:0`);
-  } else if (!hasAudio && hasMusic) {
+  } else if (hasExternalAudio && !hasMusic) {
+    args.push("-map", `${externalAudioIndex}:a:0`);
+  } else if (hasVideoAudio && !hasMusic) {
+    args.push("-map", "0:a:0");
+  } else if (!hasBaseAudio && hasMusic) {
     args.push("-map", "[aout]");
   } else {
     args.push("-an");
@@ -575,7 +608,7 @@ async function muxFinalVideo({
     "-pix_fmt", "yuv420p"
   );
 
-  if (hasAudio || hasMusic) {
+  if (hasBaseAudio || hasMusic) {
     args.push(
       "-c:a", "aac",
       "-b:a", "192k",
@@ -591,15 +624,24 @@ async function muxFinalVideo({
   await runFfmpeg(args);
 }
 
-function normalizeImageScenes(body) {
-  if (Array.isArray(body.images)) {
-    return body.images;
-  }
+function hasPerSceneAudio(body) {
+  return Array.isArray(body.scenes)
+    && body.scenes.some((scene) => scene && typeof scene === "object" && scene.image_url && scene.audio_url);
+}
 
+function normalizeImageScenes(body) {
+  // Se vier o novo formato por cena, ele deve ter prioridade sobre images.
+  // Isso evita cair no modo antigo de várias imagens + narração completa.
   if (Array.isArray(body.scenes)) {
-    return body.scenes.filter((scene) => {
+    const sceneObjects = body.scenes.filter((scene) => {
       return scene && typeof scene === "object" && scene.image_url;
     });
+
+    if (sceneObjects.length > 0) return sceneObjects;
+  }
+
+  if (Array.isArray(body.images)) {
+    return body.images;
   }
 
   return [];
@@ -617,6 +659,30 @@ function normalizeVideoSceneUrls(body) {
   return [];
 }
 
+function buildCaptionsFromScenes(scenes) {
+  let current = 0;
+  const captions = [];
+
+  for (const scene of scenes) {
+    const duration = Number(scene.duration || scene.duracao_segundos || 6);
+    const text = String(scene.caption || scene.text || scene.legenda || scene.narracao || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (text && duration > 0) {
+      captions.push({
+        start: Number(current.toFixed(3)),
+        end: Number((current + duration).toFixed(3)),
+        text
+      });
+    }
+
+    current += duration > 0 ? duration : 0;
+  }
+
+  return captions;
+}
+
 app.get("/", (req, res) => {
   res.json({
     ok: true,
@@ -626,7 +692,7 @@ app.get("/", (req, res) => {
       final: "POST /render/final"
     },
     subtitles: {
-      beautiful: "Use captions ou subtitle_srt para legenda bonita em ASS"
+      beautiful: "Use captions, scenes[].caption ou subtitle_srt para legenda bonita em ASS"
     }
   });
 });
@@ -696,16 +762,29 @@ app.post("/render/final", async (req, res) => {
   try {
     const imageScenes = normalizeImageScenes(req.body);
     const videoSceneUrls = normalizeVideoSceneUrls(req.body);
+    const perSceneAudioMode = hasPerSceneAudio(req.body);
 
-    const audioUrl = req.body.audio_url || null;
+    // No modo novo, a narração completa não deve ser usada.
+    // audio_url fica apenas como fallback para payloads antigos, sem scenes[].audio_url.
+    const audioUrl = perSceneAudioMode ? null : (req.body.audio_url || null);
     const musicUrl = req.body.music_url || null;
     const musicVolume = Number(req.body.music_volume || 0.07);
 
     if (imageScenes.length === 0 && videoSceneUrls.length === 0) {
       return res.status(400).json({
         ok: false,
-        error: "Envie images ou scene_urls"
+        error: "Envie images, scenes ou scene_urls"
       });
+    }
+
+    if (perSceneAudioMode) {
+      const invalidSceneIndex = imageScenes.findIndex((scene) => !scene.audio_url);
+      if (invalidSceneIndex !== -1) {
+        return res.status(400).json({
+          ok: false,
+          error: `Modo por cena ativado, mas a cena ${invalidSceneIndex + 1} está sem audio_url`
+        });
+      }
     }
 
     const scenePaths = [];
@@ -714,18 +793,30 @@ app.post("/render/final", async (req, res) => {
       const scene = imageScenes[i];
 
       const imageUrl = scene.image_url;
-      const duration = Number(scene.duration || req.body.default_scene_duration || 6);
+      const audioSegmentUrl = scene.audio_url || null;
+      const duration = Number(scene.duration || scene.duracao_segundos || req.body.default_scene_duration || 6);
       const zoomEnd = Number(scene.zoom_end || req.body.default_zoom_end || 1.08);
 
       if (!imageUrl) {
         throw new Error(`Cena ${i + 1} está sem image_url`);
       }
 
+      if (duration <= 0) {
+        throw new Error(`Cena ${i + 1} está com duration inválida`);
+      }
+
       const inputImagePath = path.join(jobDir, `image-${i + 1}.input`);
+      const inputAudioPath = path.join(jobDir, `audio-${i + 1}.input`);
       const sceneVideoPath = path.join(jobDir, `scene-${i + 1}.mp4`);
 
       await downloadFile(imageUrl, inputImagePath);
-      await renderImageScene(inputImagePath, sceneVideoPath, duration, zoomEnd);
+
+      if (perSceneAudioMode) {
+        await downloadFile(audioSegmentUrl, inputAudioPath);
+        await renderImageAudioScene(inputImagePath, inputAudioPath, sceneVideoPath, duration, zoomEnd);
+      } else {
+        await renderImageScene(inputImagePath, sceneVideoPath, duration, zoomEnd);
+      }
 
       scenePaths.push(sceneVideoPath);
     }
@@ -760,7 +851,12 @@ app.post("/render/final", async (req, res) => {
       await downloadFile(musicUrl, musicPath);
     }
 
-    const subtitlePath = buildSubtitlePath(jobDir, req.body);
+    const bodyForSubtitles = { ...req.body };
+    if (perSceneAudioMode && !Array.isArray(bodyForSubtitles.captions)) {
+      bodyForSubtitles.captions = buildCaptionsFromScenes(imageScenes);
+    }
+
+    const subtitlePath = buildSubtitlePath(jobDir, bodyForSubtitles);
 
     await muxFinalVideo({
       videoPath: concatPath,
@@ -768,13 +864,15 @@ app.post("/render/final", async (req, res) => {
       audioPath,
       musicPath,
       subtitlePath,
-      musicVolume
+      musicVolume,
+      useVideoAudio: perSceneAudioMode
     });
 
     return res.json({
       ok: true,
       video_url: getVideoUrl(outputFileName),
       scenes_count: scenePaths.length,
+      audio_mode: perSceneAudioMode ? "per_scene_audio" : "single_audio_fallback",
       subtitles: subtitlePath ? "beautiful_ass" : "none",
       expires_in_hours: 2
     });
@@ -799,6 +897,7 @@ app.listen(PORT, () => {
   console.log(`API FFmpeg rodando na porta ${PORT}`);
   console.log("POST /render/image");
   console.log("POST /render/final");
-  console.log("Legenda bonita ativada via captions, subtitle_srt ou subtitle_ass.");
+  console.log("Legenda bonita ativada via captions, scenes[].caption, subtitle_srt ou subtitle_ass.");
+  console.log("Áudio por cena ativado via scenes[].audio_url.");
   console.log("Limpeza automática ativada: vídeos com mais de 2 horas serão apagados.");
 });
