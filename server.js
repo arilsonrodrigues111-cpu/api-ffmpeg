@@ -6,7 +6,7 @@ const path = require("path");
 
 const app = express();
 
-app.use(express.json({ limit: "100mb" }));
+app.use(express.json({ lifmit: "100mb" }));
 
 const PORT = Number(process.env.PORT || 80);
 const BASE_URL = String(process.env.BASE_URL || "").replace(/\/$/, "");
@@ -1212,15 +1212,8 @@ function buildAssBlockText(
     .join("\\N");
 }
 
-function createWordKaraokeAss(
-  words,
-  outputPath,
-  options = {}
-) {
-  if (
-    !Array.isArray(words)
-    || words.length === 0
-  ) {
+function createWordKaraokeAss(words, outputPath, options = {}) {
+  if (!Array.isArray(words) || words.length === 0) {
     throw new Error(
       "Nenhuma palavra válida foi recebida para gerar a legenda karaokê"
     );
@@ -1244,8 +1237,7 @@ function createWordKaraokeAss(
     options.caption_uppercase !== false;
 
   const fontFamily = sanitizeFontName(
-    options.caption_font_family
-    || "DejaVu Sans"
+    options.caption_font_family || "DejaVu Sans"
   );
 
   const maxCharsPerLine = clampNumber(
@@ -1283,53 +1275,37 @@ function createWordKaraokeAss(
     3
   );
 
-  const minWordsBeforePunctuationBreak =
-    clampNumber(
-      options.caption_min_words_before_punctuation_break,
-      3,
-      1,
-      10
-    );
+  const minWordsBeforePunctuationBreak = clampNumber(
+    options.caption_min_words_before_punctuation_break,
+    3,
+    1,
+    10
+  );
 
   const primaryColor = assColorFromHex(
-    options.caption_font_color
-    || "#FFFFFF",
+    options.caption_font_color || "#FFFFFF",
     "&H00FFFFFF"
   );
 
-  const primaryInline =
-    assInlineColorFromHex(
-      options.caption_font_color
-      || "#FFFFFF",
-      "&HFFFFFF&"
-    );
+  const primaryInline = assInlineColorFromHex(
+    options.caption_font_color || "#FFFFFF",
+    "&HFFFFFF&"
+  );
 
-  const highlightColor =
-    assInlineColorFromHex(
-      options.caption_highlight_color
-      || "#FFD400",
-      "&H00D4FF&"
-    );
+  const highlightColor = assInlineColorFromHex(
+    options.caption_highlight_color || "#FFD400",
+    "&H00D4FF&"
+  );
 
   const outlineColor = assColorFromHex(
-    options.caption_stroke_color
-    || "#090909",
+    options.caption_stroke_color || "#090909",
     "&H00090909"
   );
 
-  const shadowColor =
-    assBackColorFromHex(
-      options.caption_shadow_color
-      || "rgba(0,0,0,0.65)",
-      "&H59000000"
-    );
-
-  const boxColor =
-    assBackColorFromHex(
-      options.caption_box_color
-      || "rgba(0,0,0,0.38)",
-      "&H9E000000"
-    );
+  const shadowColor = assBackColorFromHex(
+    options.caption_shadow_color || "rgba(0,0,0,0.65)",
+    "&H59000000"
+  );
 
   const outline = clampNumber(
     options.caption_stroke_width,
@@ -1352,83 +1328,49 @@ function createWordKaraokeAss(
     20
   );
 
-  const fadeIn = clampNumber(
-    options.caption_fade_in_ms,
-    60,
+  const highlightLeadSeconds = clampNumber(
+    Number(options.caption_highlight_lead_ms || 0) / 1000,
     0,
-    1000
-  );
-
-  const fadeOut = clampNumber(
-    options.caption_fade_out_ms,
-    70,
     0,
-    1000
+    0.25
   );
 
-  const highlightLeadSeconds =
-    clampNumber(
-      Number(
-        options.caption_highlight_lead_ms
-        || 0
-      ) / 1000,
-      0,
-      0,
-      0.25
-    );
+  const preparedWords = words.map((word) => ({
+    ...word,
+    text: uppercase
+      ? word.text.toUpperCase()
+      : word.text
+  }));
 
-  const highlightTailSeconds =
-    clampNumber(
-      Number(
-        options.caption_highlight_tail_ms
-        || 0
-      ) / 1000,
-      0,
-      0,
-      0.25
-    );
+  const blocks = groupWordsIntoCaptionBlocks(
+    preparedWords,
+    {
+      maxCharsPerLine,
+      maxLines,
+      maxWordsPerBlock,
+      maxBlockDuration,
+      gapSplitSeconds,
 
-  const boxEnabled =
-    options.caption_box !== false;
+      breakOnPunctuation:
+        options.caption_break_on_punctuation !== false,
 
-  const preparedWords = words.map(
-    (word) => ({
-      ...word,
-      text: uppercase
-        ? word.text.toUpperCase()
-        : word.text
-    })
+      minWordsBeforePunctuationBreak
+    }
   );
-
-  const blocks =
-    groupWordsIntoCaptionBlocks(
-      preparedWords,
-      {
-        maxCharsPerLine,
-        maxLines,
-        maxWordsPerBlock,
-        maxBlockDuration,
-        gapSplitSeconds,
-        breakOnPunctuation:
-          options.caption_break_on_punctuation
-          !== false,
-        minWordsBeforePunctuationBreak
-      }
-    );
 
   const header = `[Script Info]
-Title: Legenda karaokê por palavra
+Title: Legenda karaokê por palavra sem duplicação
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
 ScaledBorderAndShadow: yes
 WrapStyle: 2
+Collisions: Normal
 YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: KaraokeText,${fontFamily},${fontSize},${primaryColor},${primaryColor},${outlineColor},${shadowColor},-1,0,0,0,100,100,${spacing},0,1,${outline},${shadow},2,78,78,${marginV},1
-Style: KaraokeBox,${fontFamily},${fontSize},&HFF000000,&HFF000000,&HFF000000,${boxColor},-1,0,0,0,100,100,${spacing},0,3,18,0,2,78,78,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;
@@ -1436,35 +1378,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
   const events = [];
 
   for (const block of blocks) {
-    const blockStart =
-      formatAssTime(block.start);
-
-    const blockEnd =
-      formatAssTime(block.end);
-
-    const baseText =
-      buildAssBlockText(
-        block,
-        -1,
-        {
-          highlight: highlightColor,
-          primaryInline
-        }
-      );
-
-    const fadeTag =
-      `{\\fad(${fadeIn},${fadeOut})}`;
-
-    if (boxEnabled) {
-      events.push(
-        `Dialogue: 0,${blockStart},${blockEnd},KaraokeBox,,0,0,0,,${fadeTag}${baseText}`
-      );
-    }
-
-    events.push(
-      `Dialogue: 1,${blockStart},${blockEnd},KaraokeText,,0,0,0,,${fadeTag}${baseText}`
-    );
-
+    /*
+     * Somente uma legenda fica ativa em cada instante.
+     * Isso impede o libass de mostrar uma cópia em cima
+     * e outra cópia embaixo.
+     */
     for (
       let i = 0;
       i < block.words.length;
@@ -1472,17 +1390,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
     ) {
       const word = block.words[i];
 
+      const nextWord =
+        block.words[i + 1] || null;
+
       const start = Math.max(
         block.start,
-        word.start
-          - highlightLeadSeconds
+        word.start - highlightLeadSeconds
       );
 
-      const end = Math.min(
-        block.end,
-        word.end
-          + highlightTailSeconds
-      );
+      /*
+       * A legenda da palavra atual termina exatamente
+       * quando começa a próxima palavra.
+       *
+       * Dessa maneira nunca existem duas cópias
+       * simultâneas do mesmo texto.
+       */
+      let end = nextWord
+        ? Math.max(
+          start,
+          nextWord.start - highlightLeadSeconds
+        )
+        : block.end;
+
+      if (end <= start) {
+        end = Math.min(
+          block.end,
+          Math.max(
+            word.end,
+            start + 0.01
+          )
+        );
+      }
 
       if (end <= start) {
         continue;
@@ -1499,7 +1437,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
         );
 
       events.push(
-        `Dialogue: 2,${formatAssTime(start)},${formatAssTime(end)},KaraokeText,,0,0,0,,${highlightedText}`
+        `Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},KaraokeText,,0,0,0,,${highlightedText}`
       );
     }
   }
@@ -1510,7 +1448,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
     "utf8"
   );
 }
-
 function validateAssContent(content) {
   const text = String(content || "")
     .replace(/^\uFEFF/, "")
