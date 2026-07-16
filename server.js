@@ -6,7 +6,7 @@ const path = require("path");
 
 const app = express();
 
-app.use(express.json({ lifmit: "100mb" }));
+app.use(express.json({ limit: "100mb" }));
 
 const PORT = Number(process.env.PORT || 80);
 const BASE_URL = String(process.env.BASE_URL || "").replace(/\/$/, "");
@@ -773,14 +773,14 @@ function createStandardAssSubtitle(
 ) {
   const fontSize = clampNumber(
     options.caption_font_size,
-    76,
+    58,
     30,
     160
   );
 
   const marginV = clampNumber(
     options.caption_margin_v,
-    235,
+    500,
     0,
     900
   );
@@ -1219,18 +1219,33 @@ function createWordKaraokeAss(words, outputPath, options = {}) {
     );
   }
 
+  /*
+   * PADRÕES SEGUROS PARA TIKTOK E KWAI
+   *
+   * Alignment 2 = centro inferior.
+   * MarginV maior = legenda mais alta.
+   * O valor 500 deixa a legenda fora da área normalmente
+   * ocupada pela descrição e pelos controles das plataformas.
+   */
   const fontSize = clampNumber(
     options.caption_font_size,
-    76,
+    58,
     30,
     160
   );
 
   const marginV = clampNumber(
     options.caption_margin_v,
-    235,
+    500,
     0,
     900
+  );
+
+  const alignment = clampNumber(
+    options.caption_alignment,
+    2,
+    1,
+    9
   );
 
   const uppercase =
@@ -1256,7 +1271,7 @@ function createWordKaraokeAss(words, outputPath, options = {}) {
 
   const maxWordsPerBlock = clampNumber(
     options.caption_max_words_per_block,
-    7,
+    8,
     2,
     14
   );
@@ -1307,6 +1322,11 @@ function createWordKaraokeAss(words, outputPath, options = {}) {
     "&H59000000"
   );
 
+  const boxColor = assBackColorFromHex(
+    options.caption_box_color || "rgba(0,0,0,0.38)",
+    "&H9E000000"
+  );
+
   const outline = clampNumber(
     options.caption_stroke_width,
     5,
@@ -1328,11 +1348,47 @@ function createWordKaraokeAss(words, outputPath, options = {}) {
     20
   );
 
+  const boxEnabled =
+    options.caption_box !== false;
+
+  const boxPadding = clampNumber(
+    options.caption_box_padding,
+    18,
+    4,
+    60
+  );
+
+  const fadeIn = clampNumber(
+    options.caption_fade_in_ms,
+    60,
+    0,
+    1000
+  );
+
+  const fadeOut = clampNumber(
+    options.caption_fade_out_ms,
+    70,
+    0,
+    1000
+  );
+
   const highlightLeadSeconds = clampNumber(
     Number(options.caption_highlight_lead_ms || 0) / 1000,
     0,
     0,
     0.25
+  );
+
+  /*
+   * Antes esse campo era enviado pelo n8n, porém ignorado.
+   * Agora ele prolonga discretamente a última palavra de cada bloco,
+   * sem criar duas legendas simultâneas.
+   */
+  const highlightTailSeconds = clampNumber(
+    Number(options.caption_highlight_tail_ms || 90) / 1000,
+    0.09,
+    0,
+    0.5
   );
 
   const preparedWords = words.map((word) => ({
@@ -1359,7 +1415,7 @@ function createWordKaraokeAss(words, outputPath, options = {}) {
   );
 
   const header = `[Script Info]
-Title: Legenda karaokê por palavra sem duplicação
+Title: Legenda karaokê em área segura
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -1370,28 +1426,29 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: KaraokeText,${fontFamily},${fontSize},${primaryColor},${primaryColor},${outlineColor},${shadowColor},-1,0,0,0,100,100,${spacing},0,1,${outline},${shadow},2,78,78,${marginV},1
+Style: KaraokeBox,${fontFamily},${fontSize},&HFF000000,&HFF000000,&HFF000000,${boxColor},-1,0,0,0,100,100,${spacing},0,3,${boxPadding},0,${alignment},78,78,${marginV},1
+Style: KaraokeText,${fontFamily},${fontSize},${primaryColor},${primaryColor},${outlineColor},${shadowColor},-1,0,0,0,100,100,${spacing},0,1,${outline},${shadow},${alignment},78,78,${marginV},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;
 
   const events = [];
 
-  for (const block of blocks) {
-    /*
-     * Somente uma legenda fica ativa em cada instante.
-     * Isso impede o libass de mostrar uma cópia em cima
-     * e outra cópia embaixo.
-     */
+  for (
+    let blockIndex = 0;
+    blockIndex < blocks.length;
+    blockIndex++
+  ) {
+    const block = blocks[blockIndex];
+    const nextBlock = blocks[blockIndex + 1] || null;
+
     for (
       let i = 0;
       i < block.words.length;
       i++
     ) {
       const word = block.words[i];
-
-      const nextWord =
-        block.words[i + 1] || null;
+      const nextWord = block.words[i + 1] || null;
 
       const start = Math.max(
         block.start,
@@ -1399,26 +1456,40 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
       );
 
       /*
-       * A legenda da palavra atual termina exatamente
-       * quando começa a próxima palavra.
+       * Dentro do mesmo bloco, o evento termina quando começa
+       * a próxima palavra. Assim nunca existem duas cópias
+       * completas da legenda ao mesmo tempo.
        *
-       * Dessa maneira nunca existem duas cópias
-       * simultâneas do mesmo texto.
+       * Na última palavra do bloco, aplicamos o tail solicitado,
+       * limitado pelo começo do próximo bloco.
        */
-      let end = nextWord
-        ? Math.max(
+      let end;
+
+      if (nextWord) {
+        end = Math.max(
           start,
           nextWord.start - highlightLeadSeconds
-        )
-        : block.end;
+        );
+      } else {
+        const desiredEnd = Math.max(
+          word.end,
+          block.end
+        ) + highlightTailSeconds;
+
+        const nextBoundary = nextBlock
+          ? nextBlock.start - highlightLeadSeconds
+          : desiredEnd;
+
+        end = Math.min(
+          desiredEnd,
+          Math.max(start, nextBoundary)
+        );
+      }
 
       if (end <= start) {
-        end = Math.min(
-          block.end,
-          Math.max(
-            word.end,
-            start + 0.01
-          )
+        end = Math.max(
+          word.end,
+          start + 0.01
         );
       }
 
@@ -1436,8 +1507,43 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
           }
         );
 
+      const plainText =
+        buildAssBlockText(
+          block,
+          -1,
+          {
+            highlight: highlightColor,
+            primaryInline
+          }
+        );
+
+      /*
+       * O fade é aplicado somente na entrada do primeiro evento
+       * e na saída do último evento do bloco. Isso evita o efeito
+       * de piscar a cada palavra.
+       */
+      const fadeInForEvent =
+        i === 0 ? fadeIn : 0;
+
+      const fadeOutForEvent =
+        i === block.words.length - 1
+          ? fadeOut
+          : 0;
+
+      const fadeTag =
+        fadeInForEvent > 0
+        || fadeOutForEvent > 0
+          ? `{\\fad(${fadeInForEvent},${fadeOutForEvent})}`
+          : "";
+
+      if (boxEnabled) {
+        events.push(
+          `Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},KaraokeBox,,0,0,0,,${fadeTag}${plainText}`
+        );
+      }
+
       events.push(
-        `Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},KaraokeText,,0,0,0,,${highlightedText}`
+        `Dialogue: 1,${formatAssTime(start)},${formatAssTime(end)},KaraokeText,,0,0,0,,${fadeTag}${highlightedText}`
       );
     }
   }
@@ -1447,6 +1553,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
     `${header}\n${events.join("\n")}\n`,
     "utf8"
   );
+
+  return {
+    blocks_count: blocks.length,
+    caption_margin_v_used: marginV,
+    caption_font_size_used: fontSize,
+    caption_alignment_used: alignment,
+    caption_box_used: boxEnabled,
+    caption_highlight_tail_ms_used:
+      Math.round(highlightTailSeconds * 1000)
+  };
 }
 function validateAssContent(content) {
   const text = String(content || "")
@@ -1584,16 +1700,18 @@ async function buildSubtitle(
     normalizeWordTimings(body);
 
   if (wordTimings.length > 0) {
-    createWordKaraokeAss(
-      wordTimings,
-      assPath,
-      body
-    );
+    const karaokeInfo =
+      createWordKaraokeAss(
+        wordTimings,
+        assPath,
+        body
+      );
 
     return {
       path: assPath,
       mode: "word_karaoke_ass",
-      words_count: wordTimings.length
+      words_count: wordTimings.length,
+      ...karaokeInfo
     };
   }
 
@@ -2434,6 +2552,18 @@ app.post(
 
         captions_count:
           subtitle.captions_count || 0,
+
+        caption_margin_v_used:
+          subtitle.caption_margin_v_used || null,
+
+        caption_font_size_used:
+          subtitle.caption_font_size_used || null,
+
+        caption_box_used:
+          subtitle.caption_box_used ?? null,
+
+        caption_highlight_tail_ms_used:
+          subtitle.caption_highlight_tail_ms_used || null,
 
         expires_in_hours: 2
       });
